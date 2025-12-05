@@ -236,9 +236,9 @@ export async function sendAuditReport(date, datePath, allResults, usuarios) {
     console.log(`\n📧 Preparing email reports...`);
 
     // ========== FOR TESTING: Send emails by obra to me only ==========
-    // Comment out the line below to send to actual users in production
-    const TEST_MODE = true;
-    const TEST_EMAIL = "said.nader@ydn.com.co";
+    // Set EMAIL_TEST_MODE=true in .env to send all emails to test address
+    const TEST_MODE = process.env.EMAIL_TEST_MODE === "true";
+    const TEST_EMAIL = process.env.EMAIL_TEST_ADDRESS || "said.nader@ydn.com.co";
     // ==================================================================
 
     // Group results by obra
@@ -266,17 +266,22 @@ export async function sendAuditReport(date, datePath, allResults, usuarios) {
     const eligibleRoles = ["Admin", "Super Admin", "Auditor"];
     const allUsuarios = Array.from(usuarios.values());
 
-    console.log(`🔍 DEBUG: All usuarios roles:`, allUsuarios.map(u => ({
-      usuario: u.usuario,
-      rol: u.rol,
-      estado: u.estado_usuario,
-      correo: u.correo
-    })));
+    console.log(
+      `🔍 DEBUG: All usuarios roles:`,
+      allUsuarios.map((u) => ({
+        usuario: u.usuario,
+        rol: u.rol,
+        estado: u.estado_usuario,
+        correo: u.correo,
+      }))
+    );
 
     const activeUsuarios = allUsuarios.filter(
       (u) =>
         u.estado_usuario?.toUpperCase() === "ACTIVO" &&
-        eligibleRoles.some(role => role.toLowerCase() === u.rol?.toLowerCase()) &&
+        eligibleRoles.some(
+          (role) => role.toLowerCase() === u.rol?.toLowerCase()
+        ) &&
         u.correo
     );
 
@@ -322,8 +327,12 @@ export async function sendAuditReport(date, datePath, allResults, usuarios) {
 
       if (TEST_MODE) {
         // In TEST_MODE: Send individual email to test address for EACH eligible user
-        console.log(`📬 [TEST MODE] Would send to ${recipientsForObra.length} users: ${recipientEmails}`);
-        console.log(`📬 [TEST MODE] Sending ${recipientsForObra.length} individual emails to: ${TEST_EMAIL}`);
+        console.log(
+          `📬 [TEST MODE] Would send to ${recipientsForObra.length} users: ${recipientEmails}`
+        );
+        console.log(
+          `📬 [TEST MODE] Sending ${recipientsForObra.length} individual emails to: ${TEST_EMAIL}`
+        );
 
         for (const user of recipientsForObra) {
           await sendAuditEmail(
@@ -335,7 +344,9 @@ export async function sendAuditReport(date, datePath, allResults, usuarios) {
             `${obraName} - [Para: ${user.correo}]`
           );
           emailsSent++;
-          console.log(`  ✅ Sent test email for user: ${user.correo} (${user.rol})`);
+          console.log(
+            `  ✅ Sent test email for user: ${user.correo} (${user.rol})`
+          );
         }
       } else {
         // Production: Send one email to all recipients
