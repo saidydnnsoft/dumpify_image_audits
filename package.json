@@ -1,0 +1,27 @@
+{
+  "name": "dumpify_image_audit",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "functions-framework --target=audit_images",
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "axios": "^1.9.0",
+    "@google-cloud/functions-framework": "^3.0.0",
+    "@google-cloud/storage": "^7.14.0",
+    "@google/generative-ai": "^0.21.0",
+    "date-fns": "^4.1.0",
+    "date-fns-tz": "^3.2.0",
+    "cross-env": "^7.0.3",
+    "dotenv": "^16.5.0",
+    "exceljs": "^4.4.0",
+    "googleapis": "^144.0.0",
+    "handlebars": "^4.7.8",
+    "nodemailer": "^7.0.3"
+  },
+  "author": "",
+  "license": "ISC",
+  "description": ""
+}
