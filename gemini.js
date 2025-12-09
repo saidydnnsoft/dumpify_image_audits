@@ -41,10 +41,11 @@ ${validPlacas.join(", ")}
 **COMPARISON RULES:**
 
 1. **numero_vale**:
-   - This is PRINTED/STAMPED (not handwritten), so should be very clear
-   - Must match exactly
-   - Only allow OCR errors like 5→S, 0→O, 1→I, 8→B
-   - High confidence expected
+   - This is PRINTED/STAMPED (not handwritten), so should be very clear and easy to read
+   - If the printed/stamped number matches the reference exactly, mark as coincide=true
+   - Do NOT create false discrepancies or mention "control numbers"
+   - Only mark as false if there is a clear, visible difference
+   - High confidence expected (0.95-1.0 for exact matches)
 
 2. **placa**:
    - This is HANDWRITTEN - be VERY flexible
@@ -97,22 +98,22 @@ Return ONLY valid JSON (no markdown, no extra text).
     "numeroVale": {
       "coincide": true/false,
       "confianza": 0.0-1.0,
-      "observacion": "Brief note on any discrepancy (in Spanish)"
+      "observacion": "Only explain if coincide=false, otherwise leave empty string (in Spanish)"
     },
     "placa": {
       "coincide": true/false,
       "confianza": 0.0-1.0,
-      "observacion": "Note if fuzzy matched to valid placa (in Spanish)"
+      "observacion": "Only explain if there's a fuzzy match or mismatch, otherwise leave empty string (in Spanish)"
     },
     "m3": {
       "coincide": true/false,
       "confianza": 0.0-1.0,
-      "observacion": "Brief note (in Spanish)"
+      "observacion": "Only explain if coincide=false, otherwise leave empty string (in Spanish)"
     },
     "fecha": {
       "coincide": true/false,
       "confianza": 0.0-1.0,
-      "observacion": "Brief note (in Spanish)"
+      "observacion": "Only explain if there's a date issue or 1-day tolerance applied, otherwise leave empty string (in Spanish)"
     }
   },
   "aprobado": true/false

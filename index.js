@@ -127,7 +127,9 @@ http("audit_images", async (req, res) => {
       );
 
       // Step 3: Download images ONLY for unprocessed records
-      console.log("\n--- Step 3: Downloading images for unprocessed records ---");
+      console.log(
+        "\n--- Step 3: Downloading images for unprocessed records ---"
+      );
       await downloadAndCacheImages(unprocessedRecords, datePath);
 
       // Step 4: Audit records with Gemini
