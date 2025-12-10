@@ -66,6 +66,7 @@ export async function auditRecord(record, imagePath, datePath, validPlacas) {
       timestamp: new Date().toISOString(),
       aprobado: geminiResult.aprobado,
       obra: record.obra || null,
+      image_path: imagePath,
       gemini_extraction: geminiResult.extracciones,
       appsheet_values: {
         numeroVale: record.numeroVale || null,
@@ -97,6 +98,7 @@ export async function auditRecord(record, imagePath, datePath, validPlacas) {
       row_id: rowId,
       timestamp: new Date().toISOString(),
       obra: record.obra || null,
+      image_path: imagePath,
       status: "error",
       error: error.message,
     };
@@ -255,26 +257,9 @@ export async function sendAuditReport(date, datePath, allResults, usuarios) {
       `📊 Found ${Object.keys(resultsByObra).length} obras with audit results`
     );
 
-    // Debug: Check usuarios map
-    console.log(`🔍 DEBUG: Total usuarios in map: ${usuarios.size}`);
-    if (usuarios.size > 0) {
-      const firstUser = Array.from(usuarios.values())[0];
-      console.log(`🔍 DEBUG: Sample user:`, JSON.stringify(firstUser, null, 2));
-    }
-
     // Get active usuarios eligible for audit emails (Admin, Super Admin, Auditor)
     const eligibleRoles = ["Admin", "Super Admin", "Auditor"];
     const allUsuarios = Array.from(usuarios.values());
-
-    console.log(
-      `🔍 DEBUG: All usuarios roles:`,
-      allUsuarios.map((u) => ({
-        usuario: u.usuario,
-        rol: u.rol,
-        estado: u.estado_usuario,
-        correo: u.correo,
-      }))
-    );
 
     const activeUsuarios = allUsuarios.filter(
       (u) =>

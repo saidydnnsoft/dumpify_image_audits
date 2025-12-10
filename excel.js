@@ -108,6 +108,7 @@ export async function exportAuditToExcelBuffer(auditResults) {
   // Define columns
   sheet.columns = [
     { header: "ID", key: "row_id", width: 25 },
+    { header: "Imagen Vale", key: "image_url", width: 20 },
     { header: "Estado", key: "status", width: 15 },
     { header: "Aprobado", key: "aprobado", width: 12 },
     { header: "Número Vale", key: "numeroVale", width: 15 },
@@ -128,9 +129,15 @@ export async function exportAuditToExcelBuffer(auditResults) {
 
   // Add rows
   const rows = auditResults.map((result) => {
+    // Generate public image URL from result.image_path if available
+    const imageUrl = result.image_path
+      ? `https://storage.googleapis.com/image_audits/${result.image_path}`
+      : "";
+
     if (result.status === "error") {
       return {
         row_id: result.row_id,
+        image_url: imageUrl,
         status: "ERROR",
         aprobado: "N/A",
         error: result.error,
@@ -147,6 +154,7 @@ export async function exportAuditToExcelBuffer(auditResults) {
 
     return {
       row_id: result.row_id,
+      image_url: imageUrl,
       status: result.status,
       aprobado: result.aprobado ? "SÍ" : "NO",
       numeroVale: result.appsheet_values?.numeroVale || "",
@@ -183,6 +191,16 @@ export async function exportAuditToExcelBuffer(auditResults) {
     const rowNum = i + startRow;
     const excelRow = sheet.getRow(rowNum);
 
+    // Add hyperlink to image URL column (column B)
+    if (row.image_url) {
+      const imageCell = sheet.getCell(`B${rowNum}`);
+      imageCell.value = {
+        text: "Ver Imagen",
+        hyperlink: row.image_url,
+      };
+      imageCell.font = { color: { argb: "FF0563C1" }, underline: true };
+    }
+
     if (row.status === "ERROR") {
       // Red background for errors
       excelRow.fill = {
@@ -206,8 +224,8 @@ export async function exportAuditToExcelBuffer(auditResults) {
       };
     }
 
-    // Color code the "match" columns
-    ["F", "I", "L", "O"].forEach((col) => {
+    // Color code the "match" columns (shifted by 1 due to new image column)
+    ["G", "J", "M", "P"].forEach((col) => {
       const cell = sheet.getCell(`${col}${rowNum}`);
       if (cell.value === "NO") {
         cell.font = { color: { argb: "FF9C0006" }, bold: true };

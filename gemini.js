@@ -205,7 +205,23 @@ export async function auditWithGemini(record, imagePathInBucket, validPlacas) {
         cleanedText = cleanedText.replace(/```\n?/g, "");
       }
 
-      const auditResult = JSON.parse(cleanedText);
+      let auditResult;
+      try {
+        auditResult = JSON.parse(cleanedText);
+      } catch (parseError) {
+        console.warn(`⚠️ JSON parse error for ${record.rowId}:`, parseError.message);
+        console.warn(`Response text: ${cleanedText.substring(0, 500)}...`);
+
+        // Retry on JSON parse errors (Gemini might have returned malformed JSON)
+        if (attempt < maxRetries - 1) {
+          lastError = new Error(`JSON parse error: ${parseError.message}`);
+          const delay = baseDelay * Math.pow(2, attempt);
+          console.log(`⏳ Retrying due to malformed JSON, waiting ${delay / 1000}s...`);
+          await sleep(delay);
+          continue;
+        }
+        throw parseError;
+      }
 
       // Clean up temp files
       fs.rmSync(localDir, { recursive: true });
