@@ -112,7 +112,9 @@ export async function auditRecord(record, imagePath, datePath, validPlacas) {
       },
       comparaciones: geminiResult.comparaciones,
       discrepancies,
-      status: geminiResult.status || (geminiResult.aprobado ? "aprobado" : "inconsistencias_encontradas"),
+      status:
+        geminiResult.status ||
+        (geminiResult.aprobado ? "aprobado" : "inconsistencias_encontradas"),
       manualReviewReason: geminiResult.manualReviewReason || null,
       error: null,
     };
@@ -247,7 +249,10 @@ export async function getAllAuditResults(datePath) {
     const failedFiles = await listFiles(bucket, `audits/${datePath}/failed/`);
 
     // Get all manual review files
-    const manualReviewFiles = await listFiles(bucket, `audits/${datePath}/manual_review/`);
+    const manualReviewFiles = await listFiles(
+      bucket,
+      `audits/${datePath}/manual_review/`
+    );
 
     const allFiles = [...processedFiles, ...failedFiles, ...manualReviewFiles];
     console.log(
@@ -280,7 +285,8 @@ export async function sendAuditReport(date, datePath, allResults, usuarios) {
     // ========== FOR TESTING: Send emails by obra to me only ==========
     // Set EMAIL_TEST_MODE=true in .env to send all emails to test address
     const TEST_MODE = process.env.EMAIL_TEST_MODE === "true";
-    const TEST_EMAIL = process.env.EMAIL_TEST_ADDRESS || "said.nader@ydn.com.co";
+    const TEST_EMAIL =
+      process.env.EMAIL_TEST_ADDRESS || "said.nader@ydn.com.co";
     // ==================================================================
 
     // Group results by obra
@@ -298,7 +304,7 @@ export async function sendAuditReport(date, datePath, allResults, usuarios) {
     );
 
     // Get active usuarios eligible for audit emails (Admin, Super Admin, Auditor)
-    const eligibleRoles = ["Admin", "Super Admin", "Auditor"];
+    const eligibleRoles = ["Admin", "Super Admin"];
     const allUsuarios = Array.from(usuarios.values());
 
     const activeUsuarios = allUsuarios.filter(
@@ -334,9 +340,15 @@ export async function sendAuditReport(date, datePath, allResults, usuarios) {
       // Calculate summary for this obra
       const successful = obraResults.filter((r) => r.status !== "error");
       const failed = obraResults.filter((r) => r.status === "error");
-      const manualReview = obraResults.filter((r) => r.status === "requiere_revision_manual");
-      const approved = successful.filter((r) => r.aprobado === true && r.status !== "requiere_revision_manual");
-      const discrepancies = successful.filter((r) => r.aprobado === false && r.status !== "requiere_revision_manual");
+      const manualReview = obraResults.filter(
+        (r) => r.status === "requiere_revision_manual"
+      );
+      const approved = successful.filter(
+        (r) => r.aprobado === true && r.status !== "requiere_revision_manual"
+      );
+      const discrepancies = successful.filter(
+        (r) => r.aprobado === false && r.status !== "requiere_revision_manual"
+      );
 
       const summary = {
         successful: successful.length,
