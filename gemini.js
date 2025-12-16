@@ -18,8 +18,8 @@ function buildAuditPrompt(record, validPlacas) {
 
 **FIELD EXTRACTION:**
 Extract these 4 fields:
-1. **numero_vale**: Printed/stamped number in top right corner (NOT handwritten, easy to read)
-2. **placa**: Vehicle license plate (after "PLACA" label, handwritten)
+1. **numero_vale**: Printed/stamped number (usually top right corner, but image may be rotated - look for large printed/stamped number labeled "No." or similar)
+2. **placa**: Vehicle license plate (after "PLACA" label, handwritten - use valid placas list below to help identify correct characters)
 3. **m3**: Cubic meters quantity (in "CANTIDAD" field, look for handwritten number followed by "M3" checkbox)
 4. **fecha**: Date (after "FECHA" label, format usually DD-MM-YY or DD/MM/YY, handwritten)
 
@@ -35,46 +35,51 @@ ${JSON.stringify(
   2
 )}
 
-**VALID PLACAS LIST** (for fuzzy matching - ${validPlacas.length} total):
+**VALID PLACAS LIST** (to help identify handwritten characters - ${validPlacas.length} total):
 ${validPlacas.join(", ")}
 
 **COMPARISON RULES:**
 
 1. **numero_vale**:
-   - This is PRINTED/STAMPED (not handwritten), so should be very clear and easy to read
-   - If the printed/stamped number matches the reference exactly, mark as coincide=true
-   - Do NOT create false discrepancies or mention "control numbers"
-   - Only mark as false if there is a clear, visible difference
-   - High confidence expected (0.95-1.0 for exact matches)
+   - This is PRINTED/STAMPED (not handwritten) - should be very clear
+   - MUST match the reference EXACTLY character-by-character
+   - Extract ONLY the printed/stamped number (ignore any handwritten corrections or notes)
+   - If printed number is "97837" but reference is "57837" → coincide=false
+   - Do NOT make up alternative explanations or consider handwritten numbers
+   - If they don't match exactly → coincide=false, explain in observacion
+   - High confidence required: 0.95-1.0 for exact matches, <0.5 for mismatches
 
 2. **placa**:
-   - This is HANDWRITTEN - be VERY flexible
-   - Letters can be misread (T↔I, O↔D, N↔H, etc.)
-   - Try to match against the valid placas list
-   - If extracted placa is similar to a valid placa, use the valid placa
-   - Example: If you read "TIN893" but valid list has "TTN893", consider them matching
-   - Prioritize matches from the valid placas list
+   - This is HANDWRITTEN - extract what you see
+   - Use the valid placas list as a REFERENCE to help identify ambiguous handwritten characters
+   - Example: If handwriting looks like "CVB8q1" or "CVB891", check if "CVB891" is in valid placas list
+   - IMPORTANT: Only use exact matches - no fuzzy matching
+   - If what you extract doesn't EXACTLY match the reference → coincide=false
+   - The valid placas list helps you READ the handwriting correctly, not to auto-approve mismatches
+   - Be honest in observacion about extraction uncertainty
 
 3. **m3**:
    - CRITICAL FIELD - must match EXACTLY
-   - NO TOLERANCE for differences
-   - Handwritten number must equal reference value
-   - 16 ≠ 15, 16 ≠ 10
-   - Be careful with digit recognition (6 vs 0, 1 vs 7, 3 vs 8)
+   - NO TOLERANCE for differences whatsoever
+   - Handwritten number must equal reference value precisely
+   - 16 ≠ 15, 16 ≠ 10, 12 ≠ 11
+   - Be extremely careful with digit recognition (6 vs 0, 1 vs 7, 3 vs 8)
+   - Double-check before confirming
 
 4. **fecha**:
    - This is HANDWRITTEN
    - Image uses DD-MM-YY or DD/MM/YY format (2-digit year)
    - Reference uses DD/MM/YYYY format (4-digit year)
    - **CRITICAL: The current year is ${currentYear}**
-   - When you see a 2-digit year like "25" or "23", it MUST be "20${
-     currentYear % 100
-   }" (i.e., "2025")
-   - Recent vales are from late ${currentYear}, so years like "23" are likely misreads of "25"
-   - Be flexible: 04-12-25 = 04/12/2025
-   - Handwriting can make digits look similar: 2↔7, 1↔7, 3↔8, 5↔3, 5↔6
-   - **Allow 1-day difference**: Dates that differ by exactly 1 day should STILL be marked as coincide=true (confidence ~0.9)
-   - Example: 01/12/2025 vs 02/12/2025 = coincide=true (1 day tolerance)
+   - When you see "25" as year, interpret as "2025"
+   - Be flexible with format: 04-12-25 = 04/12/2025
+   - Handwriting can make digits look similar: 2↔7, 1↔7, 3↔8, 5↔3, 5↔6, 0↔9
+   - **Allow up to 2-day difference**: Dates that differ by 1 or 2 days should be marked as coincide=true (confidence ~0.85-0.9)
+   - Examples:
+     * 10/12/2025 vs 09/12/2025 = coincide=true (1 day, within tolerance)
+     * 10/12/2025 vs 12/12/2025 = coincide=true (2 days, within tolerance)
+     * 10/12/2025 vs 13/12/2025 = coincide=false (3 days, exceeds tolerance)
+     * 10/12/2025 vs 04/12/2025 = coincide=false (6 days, exceeds tolerance)
 
 **CONFIDENCE SCORING:**
 - 1.0 = Perfect match, crystal clear
@@ -82,6 +87,11 @@ ${validPlacas.join(", ")}
 - 0.6-0.7 = Probable match, significant handwriting challenge
 - 0.4-0.5 = Uncertain, major discrepancy but possibly explainable
 - 0.0-0.3 = Clear mismatch
+
+**CRITICAL RULE FOR coincide:**
+- ONLY set coincide=true if your confianza is >= 0.6
+- If confianza < 0.6, you MUST set coincide=false (even if it might match)
+- This ensures consistency: coincide=true always means the field is acceptable
 
 **RESPONSE FORMAT:**
 Return ONLY valid JSON (no markdown, no extra text).
@@ -119,13 +129,19 @@ Return ONLY valid JSON (no markdown, no extra text).
   "aprobado": true/false
 }
 
-Set "aprobado" to true if all 4 fields have coincide=true with confianza >= 0.6
+**APPROVAL RULE (CRITICAL):**
+Set "aprobado" to true ONLY if ALL 4 fields have coincide=true
+
+Since you're already required to set coincide=true only when confianza >= 0.6, you just need to check:
+- If ALL fields have coincide=true → aprobado=true
+- If ANY field has coincide=false → aprobado=false
 
 Examples of observacion in Spanish:
 - "Coincidencia exacta"
 - "Diferencia de 1 día, dentro de tolerancia"
-- "Placa coincide con lista válida"
-- "Cantidad no coincide: extraído 15, esperado 16"`;
+- "Número impreso no coincide con referencia"
+- "Cantidad no coincide: extraído 15, esperado 16"
+- "Fecha fuera de tolerancia (diferencia de 6 días)"`;
 }
 
 /**
@@ -133,6 +149,61 @@ Examples of observacion in Spanish:
  */
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Check image quality before processing
+ */
+async function checkImageQuality(model, imageBase64) {
+  const qualityPrompt = `You are an image quality assessor for document scanning.
+
+Analyze this vale (transport document) image and rate its quality on a scale of 0-10.
+
+**Quality criteria:**
+- 0-3: Severely illegible (heavy blur, extreme overexposure/underexposure, text unreadable)
+- 4-5: Poor quality (significant blur, poor lighting, most text difficult to read)
+- 6-7: Acceptable quality (some blur or lighting issues, but main text is readable)
+- 8-10: Good to excellent quality (clear, well-lit, text easily readable)
+
+**Focus on:**
+- Can you clearly read the printed number in the top right corner?
+- Can you read the handwritten fields (PLACA, CANTIDAD, FECHA)?
+- Is the lighting adequate?
+- Is the image focused (not blurry)?
+
+Return ONLY valid JSON (no markdown):
+{
+  "qualityScore": 0-10,
+  "isReadable": true/false,
+  "reason": "Brief explanation in Spanish of quality issues if any"
+}
+
+Set "isReadable" to true only if qualityScore >= 6.`;
+
+  const imageParts = [
+    {
+      inlineData: {
+        data: imageBase64,
+        mimeType: "image/jpeg",
+      },
+    },
+  ];
+
+  const result = await model.generateContent([qualityPrompt, ...imageParts]);
+  const response = result.response;
+  const text = response.text();
+
+  // Clean up response
+  let cleanedText = text.trim();
+  if (cleanedText.startsWith("```json")) {
+    cleanedText = cleanedText
+      .replace(/```json\n?/g, "")
+      .replace(/```\n?/g, "");
+  } else if (cleanedText.startsWith("```")) {
+    cleanedText = cleanedText.replace(/```\n?/g, "");
+  }
+
+  return JSON.parse(cleanedText);
 }
 
 /**
@@ -183,6 +254,44 @@ export async function auditWithGemini(record, imagePathInBucket, validPlacas) {
         },
       ];
 
+      // STEP 1: Check image quality first
+      if (attempt === 0) {
+        console.log(`🔍 Checking image quality for record ${record.rowId}...`);
+        try {
+          const qualityCheck = await checkImageQuality(model, imageBase64);
+          console.log(`📊 Quality score: ${qualityCheck.qualityScore}/10 - Readable: ${qualityCheck.isReadable}`);
+
+          if (!qualityCheck.isReadable) {
+            console.log(`⚠️ Image quality too low (score: ${qualityCheck.qualityScore}). Marking for manual review.`);
+            // Clean up temp files
+            fs.rmSync(localDir, { recursive: true });
+
+            return {
+              requiresManualReview: true,
+              qualityScore: qualityCheck.qualityScore,
+              reason: qualityCheck.reason,
+              extracciones: {
+                numeroVale: "",
+                placa: "",
+                m3: "",
+                fecha: ""
+              },
+              comparaciones: {
+                numeroVale: { coincide: false, confianza: 0, observacion: "Imagen ilegible - requiere revisión manual" },
+                placa: { coincide: false, confianza: 0, observacion: "Imagen ilegible - requiere revisión manual" },
+                m3: { coincide: false, confianza: 0, observacion: "Imagen ilegible - requiere revisión manual" },
+                fecha: { coincide: false, confianza: 0, observacion: "Imagen ilegible - requiere revisión manual" }
+              },
+              aprobado: false
+            };
+          }
+        } catch (qualityError) {
+          console.warn(`⚠️ Quality check failed, proceeding with audit anyway:`, qualityError.message);
+          // If quality check fails, continue with normal audit
+        }
+      }
+
+      // STEP 2: Proceed with normal audit
       const prompt = buildAuditPrompt(record, validPlacas);
 
       if (attempt === 0) {
@@ -222,6 +331,54 @@ export async function auditWithGemini(record, imagePathInBucket, validPlacas) {
         }
         throw parseError;
       }
+
+      // VALIDATION: Apply decision flow based on coincide and confianza
+      const allFieldsCoincide = Object.keys(auditResult.comparaciones).every((field) => {
+        return auditResult.comparaciones[field].coincide === true;
+      });
+
+      const allFieldsHighConfidence = Object.keys(auditResult.comparaciones).every((field) => {
+        return auditResult.comparaciones[field].confianza >= 0.6;
+      });
+
+      const hasLowConfidenceOnMismatch = Object.keys(auditResult.comparaciones).some((field) => {
+        const comp = auditResult.comparaciones[field];
+        return comp.coincide === false && comp.confianza < 0.6;
+      });
+
+      // Decision flow:
+      // 1. All match + all high confidence → aprobado
+      // 2. All match + some low confidence → requiere_revision_manual
+      // 3. Some mismatch + low confidence on mismatch → requiere_revision_manual
+      // 4. Some mismatch + high confidence → inconsistencias_encontradas
+
+      let correctStatus;
+      let correctAprobado;
+
+      if (allFieldsCoincide && allFieldsHighConfidence) {
+        correctStatus = "aprobado";
+        correctAprobado = true;
+      } else if (allFieldsCoincide && !allFieldsHighConfidence) {
+        correctStatus = "requiere_revision_manual";
+        correctAprobado = false;
+        auditResult.manualReviewReason = "Valores coinciden pero confianza de extracción baja";
+      } else if (!allFieldsCoincide && hasLowConfidenceOnMismatch) {
+        correctStatus = "requiere_revision_manual";
+        correctAprobado = false;
+        auditResult.manualReviewReason = "Inconsistencias detectadas con baja confianza";
+      } else {
+        correctStatus = "inconsistencias_encontradas";
+        correctAprobado = false;
+      }
+
+      // Correct aprobado if needed
+      if (auditResult.aprobado !== correctAprobado) {
+        console.warn(`⚠️ Gemini set aprobado=${auditResult.aprobado} for ${record.rowId}. Correcting to ${correctAprobado} (status: ${correctStatus}).`);
+        auditResult.aprobado = correctAprobado;
+      }
+
+      // Add status to result for downstream processing
+      auditResult.status = correctStatus;
 
       // Clean up temp files
       fs.rmSync(localDir, { recursive: true });

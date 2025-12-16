@@ -45,6 +45,42 @@ export async function auditRecord(record, imagePath, datePath, validPlacas) {
     // Call Gemini to audit the vale
     const geminiResult = await auditWithGemini(record, imagePath, validPlacas);
 
+    // Check if manual review is required
+    if (geminiResult.requiresManualReview) {
+      const manualReviewResult = {
+        row_id: rowId,
+        timestamp: new Date().toISOString(),
+        aprobado: false,
+        obra: record.obra || null,
+        image_path: imagePath,
+        gemini_extraction: geminiResult.extracciones,
+        appsheet_values: {
+          numeroVale: record.numeroVale || null,
+          placa: record.placa || null,
+          m3: record.m3 || null,
+          fecha: record.fecha || null,
+        },
+        comparaciones: geminiResult.comparaciones,
+        discrepancies: [],
+        status: "requiere_revision_manual",
+        qualityScore: geminiResult.qualityScore,
+        manualReviewReason: geminiResult.reason,
+        error: null,
+      };
+
+      // Save to bucket
+      const bucket = getBucket();
+      if (bucket) {
+        const auditPath = `audits/${datePath}/manual_review/${rowId}.json`;
+        await writeJSON(bucket, auditPath, manualReviewResult);
+
+        // Add to processed index so it doesn't retry
+        await addToProcessedIndex(bucket, datePath, rowId);
+      }
+
+      return manualReviewResult;
+    }
+
     // Build discrepancies list
     const discrepancies = [];
 
@@ -76,7 +112,8 @@ export async function auditRecord(record, imagePath, datePath, validPlacas) {
       },
       comparaciones: geminiResult.comparaciones,
       discrepancies,
-      status: geminiResult.aprobado ? "approved" : "discrepancies_found",
+      status: geminiResult.status || (geminiResult.aprobado ? "aprobado" : "inconsistencias_encontradas"),
+      manualReviewReason: geminiResult.manualReviewReason || null,
       error: null,
     };
 
@@ -209,9 +246,12 @@ export async function getAllAuditResults(datePath) {
     // Get all failed audit files
     const failedFiles = await listFiles(bucket, `audits/${datePath}/failed/`);
 
-    const allFiles = [...processedFiles, ...failedFiles];
+    // Get all manual review files
+    const manualReviewFiles = await listFiles(bucket, `audits/${datePath}/manual_review/`);
+
+    const allFiles = [...processedFiles, ...failedFiles, ...manualReviewFiles];
     console.log(
-      `📂 Found ${allFiles.length} total audit files for ${datePath}`
+      `📂 Found ${allFiles.length} total audit files for ${datePath} (${manualReviewFiles.length} require manual review)`
     );
 
     // Read all audit results
@@ -294,14 +334,16 @@ export async function sendAuditReport(date, datePath, allResults, usuarios) {
       // Calculate summary for this obra
       const successful = obraResults.filter((r) => r.status !== "error");
       const failed = obraResults.filter((r) => r.status === "error");
-      const approved = successful.filter((r) => r.aprobado === true);
-      const discrepancies = successful.filter((r) => r.aprobado === false);
+      const manualReview = obraResults.filter((r) => r.status === "requiere_revision_manual");
+      const approved = successful.filter((r) => r.aprobado === true && r.status !== "requiere_revision_manual");
+      const discrepancies = successful.filter((r) => r.aprobado === false && r.status !== "requiere_revision_manual");
 
       const summary = {
         successful: successful.length,
         failed: failed.length,
         approved: approved.length,
         discrepancies: discrepancies.length,
+        manualReview: manualReview.length,
       };
 
       // Generate Excel report for this obra
