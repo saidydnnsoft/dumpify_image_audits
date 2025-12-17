@@ -109,27 +109,27 @@ export async function exportAuditToExcelBuffer(auditResults) {
   sheet.columns = [
     { header: "ID", key: "row_id", width: 25 },
     { header: "Imagen Vale", key: "image_url", width: 20 },
+    { header: "Calidad Imagen", key: "quality_score", width: 15 },
     { header: "Estado", key: "status", width: 20 },
     { header: "Aprobado", key: "aprobado", width: 12 },
     { header: "Número Vale", key: "numeroVale", width: 15 },
     { header: "Vale (Extraído)", key: "numeroVale_extracted", width: 18 },
     { header: "Vale Coincide", key: "numeroVale_match", width: 15 },
-    { header: "Vale Confianza", key: "numeroVale_confidence", width: 15 },
+    { header: "Vale Conf. Lectura", key: "numeroVale_confidence", width: 18 },
     { header: "Placa", key: "placa", width: 12 },
     { header: "Placa (Extraída)", key: "placa_extracted", width: 15 },
     { header: "Placa Coincide", key: "placa_match", width: 15 },
-    { header: "Placa Confianza", key: "placa_confidence", width: 15 },
+    { header: "Placa Conf. Lectura", key: "placa_confidence", width: 18 },
     { header: "M3", key: "m3", width: 10 },
     { header: "M3 (Extraído)", key: "m3_extracted", width: 15 },
     { header: "M3 Coincide", key: "m3_match", width: 12 },
-    { header: "M3 Confianza", key: "m3_confidence", width: 15 },
+    { header: "M3 Conf. Lectura", key: "m3_confidence", width: 18 },
     { header: "Fecha", key: "fecha", width: 15 },
     { header: "Fecha (Extraída)", key: "fecha_extracted", width: 15 },
     { header: "Fecha Coincide", key: "fecha_match", width: 15 },
-    { header: "Fecha Confianza", key: "fecha_confidence", width: 15 },
-    { header: "Calidad Imagen", key: "quality_score", width: 15 },
+    { header: "Fecha Conf. Lectura", key: "fecha_confidence", width: 18 },
     { header: "Motivo Revisión", key: "manual_review_reason", width: 50 },
-    { header: "Discrepancias", key: "discrepancies", width: 50 },
+    { header: "Observaciones", key: "observaciones", width: 60 },
     { header: "Error", key: "error", width: 50 },
   ];
 
@@ -144,6 +144,7 @@ export async function exportAuditToExcelBuffer(auditResults) {
       return {
         row_id: result.row_id,
         image_url: imageUrl,
+        quality_score: result.qualityScore ? `${result.qualityScore}/10` : "N/A",
         status: "ERROR",
         aprobado: "N/A",
         numeroVale: result.appsheet_values?.numeroVale || "",
@@ -162,20 +163,29 @@ export async function exportAuditToExcelBuffer(auditResults) {
         fecha_extracted: "",
         fecha_match: "N/A",
         fecha_confidence: "N/A",
-        quality_score: "N/A",
         manual_review_reason: "",
-        discrepancies: "",
+        observaciones: "",
         error: result.error,
       };
     }
 
     const comparaciones = result.comparaciones || {};
-    const discrepancyList = (result.discrepancies || [])
-      .map(
-        (d) =>
-          `${d.field}: esperado="${d.expected}", extraído="${d.extracted}" (${d.reason})`
-      )
-      .join(" | ");
+    const confianzas = result.confianzas || {};
+
+    // Collect all observaciones (non-empty) into a single field
+    const observacionesList = [];
+    if (comparaciones.numeroVale?.observacion) {
+      observacionesList.push(`Vale: ${comparaciones.numeroVale.observacion}`);
+    }
+    if (comparaciones.placa?.observacion) {
+      observacionesList.push(`Placa: ${comparaciones.placa.observacion}`);
+    }
+    if (comparaciones.m3?.observacion) {
+      observacionesList.push(`M3: ${comparaciones.m3.observacion}`);
+    }
+    if (comparaciones.fecha?.observacion) {
+      observacionesList.push(`Fecha: ${comparaciones.fecha.observacion}`);
+    }
 
     // Format status in Spanish
     let statusDisplay = result.status;
@@ -183,33 +193,33 @@ export async function exportAuditToExcelBuffer(auditResults) {
     else if (result.status === "requiere_revision_manual") statusDisplay = "REVISIÓN MANUAL";
     else if (result.status === "inconsistencias_encontradas") statusDisplay = "INCONSISTENCIAS";
 
-    // Handle quality < 6 case (no extraction performed)
-    const isLowQuality = result.status === "requiere_revision_manual" && result.qualityScore && result.qualityScore < 6;
+    // Handle quality < 7 case (no extraction performed)
+    const isLowQuality = result.status === "requiere_revision_manual" && result.qualityScore && result.qualityScore < 7;
 
     return {
       row_id: result.row_id,
       image_url: imageUrl,
+      quality_score: result.qualityScore ? `${result.qualityScore}/10` : "N/A",
       status: statusDisplay,
       aprobado: result.aprobado ? "SÍ" : "NO",
       numeroVale: result.appsheet_values?.numeroVale || "",
-      numeroVale_extracted: isLowQuality ? "N/A" : (result.gemini_extraction?.numeroVale || ""),
+      numeroVale_extracted: isLowQuality ? "N/A" : (result.extracciones?.numeroVale || ""),
       numeroVale_match: isLowQuality ? "N/A" : (comparaciones.numeroVale?.coincide ? "SÍ" : "NO"),
-      numeroVale_confidence: isLowQuality ? "N/A" : (comparaciones.numeroVale?.confianza?.toFixed(2) || "0.00"),
+      numeroVale_confidence: isLowQuality ? "N/A" : (confianzas.numeroVale !== undefined ? (confianzas.numeroVale * 100).toFixed(0) + "%" : "N/A"),
       placa: result.appsheet_values?.placa || "",
-      placa_extracted: isLowQuality ? "N/A" : (result.gemini_extraction?.placa || ""),
+      placa_extracted: isLowQuality ? "N/A" : (result.extracciones?.placa || ""),
       placa_match: isLowQuality ? "N/A" : (comparaciones.placa?.coincide ? "SÍ" : "NO"),
-      placa_confidence: isLowQuality ? "N/A" : (comparaciones.placa?.confianza?.toFixed(2) || "0.00"),
+      placa_confidence: isLowQuality ? "N/A" : (confianzas.placa !== undefined ? (confianzas.placa * 100).toFixed(0) + "%" : "N/A"),
       m3: result.appsheet_values?.m3 || "",
-      m3_extracted: isLowQuality ? "N/A" : (result.gemini_extraction?.m3 || ""),
+      m3_extracted: isLowQuality ? "N/A" : (result.extracciones?.m3 || ""),
       m3_match: isLowQuality ? "N/A" : (comparaciones.m3?.coincide ? "SÍ" : "NO"),
-      m3_confidence: isLowQuality ? "N/A" : (comparaciones.m3?.confianza?.toFixed(2) || "0.00"),
+      m3_confidence: isLowQuality ? "N/A" : (confianzas.m3 !== undefined ? (confianzas.m3 * 100).toFixed(0) + "%" : "N/A"),
       fecha: result.appsheet_values?.fecha || "",
-      fecha_extracted: isLowQuality ? "N/A" : (result.gemini_extraction?.fecha || ""),
+      fecha_extracted: isLowQuality ? "N/A" : (result.extracciones?.fecha || ""),
       fecha_match: isLowQuality ? "N/A" : (comparaciones.fecha?.coincide ? "SÍ" : "NO"),
-      fecha_confidence: isLowQuality ? "N/A" : (comparaciones.fecha?.confianza?.toFixed(2) || "0.00"),
-      quality_score: result.qualityScore ? `${result.qualityScore}/10` : "N/A",
+      fecha_confidence: isLowQuality ? "N/A" : (confianzas.fecha !== undefined ? (confianzas.fecha * 100).toFixed(0) + "%" : "N/A"),
       manual_review_reason: result.manualReviewReason || "",
-      discrepancies: discrepancyList,
+      observaciones: observacionesList.join(" | "),
       error: result.error || "",
     };
   });
@@ -271,8 +281,8 @@ export async function exportAuditToExcelBuffer(auditResults) {
       };
     }
 
-    // Color code the "match" columns (G, K, O, S - accounting for new confidence columns)
-    ["G", "K", "O", "S"].forEach((col) => {
+    // Color code the "match" columns (H, L, P, T - Vale Coincide, Placa Coincide, M3 Coincide, Fecha Coincide)
+    ["H", "L", "P", "T"].forEach((col) => {
       const cell = sheet.getCell(`${col}${rowNum}`);
       if (cell.value === "NO") {
         cell.font = { color: { argb: "FF9C0006" }, bold: true };
@@ -281,18 +291,18 @@ export async function exportAuditToExcelBuffer(auditResults) {
       }
     });
 
-    // Color code confidence columns based on value (H, L, P, T)
-    ["H", "L", "P", "T"].forEach((col) => {
+    // Color code confidence columns based on value (I, M, Q, U - reading confidence %)
+    ["I", "M", "Q", "U"].forEach((col) => {
       const cell = sheet.getCell(`${col}${rowNum}`);
-      if (cell.value !== "N/A" && typeof cell.value === "string") {
-        const confValue = parseFloat(cell.value);
+      if (cell.value !== "N/A" && typeof cell.value === "string" && cell.value.endsWith("%")) {
+        const confValue = parseInt(cell.value);
         if (!isNaN(confValue)) {
-          if (confValue < 0.6) {
-            cell.font = { color: { argb: "FF9C0006" }, bold: true }; // Red for low confidence
-          } else if (confValue >= 0.6 && confValue < 0.8) {
-            cell.font = { color: { argb: "FFE97132" } }; // Orange for medium confidence
+          if (confValue < 60) {
+            cell.font = { color: { argb: "FF9C0006" }, bold: true }; // Red for low confidence (<60%)
+          } else if (confValue >= 60 && confValue < 80) {
+            cell.font = { color: { argb: "FFE97132" } }; // Orange for medium confidence (60-79%)
           } else {
-            cell.font = { color: { argb: "FF006100" } }; // Green for high confidence
+            cell.font = { color: { argb: "FF006100" } }; // Green for high confidence (>=80%)
           }
         }
       }

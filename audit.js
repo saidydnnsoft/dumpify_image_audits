@@ -53,15 +53,15 @@ export async function auditRecord(record, imagePath, datePath, validPlacas) {
         aprobado: false,
         obra: record.obra || null,
         image_path: imagePath,
-        gemini_extraction: geminiResult.extracciones,
+        extracciones: geminiResult.extracciones || {},
+        confianzas: geminiResult.confianzas || {},
         appsheet_values: {
           numeroVale: record.numeroVale || null,
           placa: record.placa || null,
           m3: record.m3 || null,
           fecha: record.fecha || null,
         },
-        comparaciones: geminiResult.comparaciones,
-        discrepancies: [],
+        comparaciones: geminiResult.comparaciones || {},
         status: "requiere_revision_manual",
         qualityScore: geminiResult.qualityScore,
         manualReviewReason: geminiResult.reason,
@@ -81,29 +81,14 @@ export async function auditRecord(record, imagePath, datePath, validPlacas) {
       return manualReviewResult;
     }
 
-    // Build discrepancies list
-    const discrepancies = [];
-
-    Object.keys(geminiResult.comparaciones).forEach((field) => {
-      const comparison = geminiResult.comparaciones[field];
-      if (!comparison.coincide) {
-        discrepancies.push({
-          field,
-          extracted: geminiResult.extracciones[field],
-          expected: record[field],
-          confidence: comparison.confianza,
-          reason: comparison.observacion,
-        });
-      }
-    });
-
     const auditResult = {
       row_id: rowId,
       timestamp: new Date().toISOString(),
       aprobado: geminiResult.aprobado,
       obra: record.obra || null,
       image_path: imagePath,
-      gemini_extraction: geminiResult.extracciones,
+      extracciones: geminiResult.extracciones,
+      confianzas: geminiResult.confianzas,
       appsheet_values: {
         numeroVale: record.numeroVale || null,
         placa: record.placa || null,
@@ -111,10 +96,8 @@ export async function auditRecord(record, imagePath, datePath, validPlacas) {
         fecha: record.fecha || null,
       },
       comparaciones: geminiResult.comparaciones,
-      discrepancies,
-      status:
-        geminiResult.status ||
-        (geminiResult.aprobado ? "aprobado" : "inconsistencias_encontradas"),
+      status: geminiResult.status,
+      qualityScore: geminiResult.qualityScore,
       manualReviewReason: geminiResult.manualReviewReason || null,
       error: null,
     };
@@ -282,6 +265,10 @@ export async function sendAuditReport(date, datePath, allResults, usuarios) {
   try {
     console.log(`\n📧 Preparing email reports...`);
 
+    // Format date from MM/dd/yyyy to dd/MM/yyyy for email display
+    const [month, day, year] = date.split("/");
+    const formattedDate = `${day}/${month}/${year}`;
+
     // ========== FOR TESTING: Send emails by obra to me only ==========
     // Set EMAIL_TEST_MODE=true in .env to send all emails to test address
     const TEST_MODE = process.env.EMAIL_TEST_MODE === "true";
@@ -304,7 +291,7 @@ export async function sendAuditReport(date, datePath, allResults, usuarios) {
     );
 
     // Get active usuarios eligible for audit emails (Admin, Super Admin, Auditor)
-    const eligibleRoles = ["Admin", "Super Admin"];
+    const eligibleRoles = ["Admin", "Super Adbemin"];
     const allUsuarios = Array.from(usuarios.values());
 
     const activeUsuarios = allUsuarios.filter(
@@ -376,7 +363,7 @@ export async function sendAuditReport(date, datePath, allResults, usuarios) {
         for (const user of recipientsForObra) {
           await sendAuditEmail(
             TEST_EMAIL,
-            date,
+            formattedDate,
             excelBuffer,
             summary,
             transporter,
@@ -392,7 +379,7 @@ export async function sendAuditReport(date, datePath, allResults, usuarios) {
         console.log(`📬 Sending to: ${recipientEmails}`);
         await sendAuditEmail(
           recipientEmails,
-          date,
+          formattedDate,
           excelBuffer,
           summary,
           transporter,

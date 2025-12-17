@@ -1,4 +1,5 @@
 import { subDays, format } from "date-fns";
+import { formatInTimeZone } from "date-fns-tz";
 
 export function getYesterdayDateString() {
   const today = new Date();
@@ -24,6 +25,6 @@ export function formatAppsheetDate(dateStr) {
   return `${day}/${month}/${year}`;
 }
 
-export function getBogotaDateString(format = "yyyy-MM-dd") {
-  return formatInTimeZone(new Date(), "America/Bogota", format);
+export function getBogotaDateString(formatStr = "yyyy-MM-dd") {
+  return formatInTimeZone(new Date(), "America/Bogota", formatStr);
 }

@@ -56,6 +56,7 @@ export async function sendAuditEmail(
   const totalRecords = summary.successful + summary.failed;
   const approvedRecords = summary.approved || 0;
   const discrepancyRecords = summary.discrepancies || 0;
+  const manualReviewRecords = summary.manualReview || 0;
 
   const html = `
     <html>
@@ -108,6 +109,16 @@ export async function sendAuditEmail(
                 <span class="stat-label">🟡 Con discrepancias:</span>
                 <span class="warning">${discrepancyRecords}</span>
               </div>
+              ${
+                manualReviewRecords > 0
+                  ? `
+              <div class="stat">
+                <span class="stat-label">🟠 Requiere revisión manual:</span>
+                <span class="warning">${manualReviewRecords}</span>
+              </div>
+              `
+                  : ""
+              }
               `
                   : ""
               }
