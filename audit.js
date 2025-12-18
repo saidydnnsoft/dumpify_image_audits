@@ -291,7 +291,7 @@ export async function sendAuditReport(date, datePath, allResults, usuarios) {
     );
 
     // Get active usuarios eligible for audit emails (Admin, Super Admin, Auditor)
-    const eligibleRoles = ["Admin", "Super Adbemin"];
+    const eligibleRoles = ["Admin", "Super Admin"];
     const allUsuarios = Array.from(usuarios.values());
 
     const activeUsuarios = allUsuarios.filter(

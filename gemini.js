@@ -6,8 +6,9 @@ import path from "path";
 /**
  * Build the extraction-only prompt for Gemini (no comparison, just OCR)
  */
-function buildExtractionPrompt(validPlacas) {
+function buildExtractionPrompt(validPlacas, referenceValues) {
   const currentYear = new Date().getFullYear();
+  const currentMonth = new Date().getMonth() + 1; // 1-12
 
   return `You are an OCR expert extracting data from construction material transport documents (vales).
 
@@ -19,6 +20,7 @@ Extract these fields exactly as you see them:
    - This is printed, NOT handwritten
    - Typically 5-6 digits
    - Look for the largest, clearest printed number
+   - Extract exactly what you see (usually very clear)
 
 2. **placa**: Vehicle license plate (next to "PLACA:" label)
    - This is HANDWRITTEN
@@ -26,18 +28,41 @@ Extract these fields exactly as you see them:
    - Use this list to help identify unclear handwriting (${
      validPlacas.length
    } valid placas): ${validPlacas.join(", ")}
+   - Reference value: ${referenceValues.placa || "N/A"}
+   - **CRITICAL**: When in doubt about any character in the placa, strongly prefer the reference value
 
 3. **m3**: Cubic meters quantity (nex to "CANTIDAD:" field and before "M3")
    - This is HANDWRITTEN
    - Look for number followed by "M3" checkbox or label
    - Usually between 6-20
+   - Extract exactly what you see
 
 4. **fecha**: Date (after "FECHA:" label)
    - This is HANDWRITTEN
    - Format on image: DD-MM-YY or DD/MM/YY (2-digit year)
-   - Current year is ${currentYear}
+   - Current date context: Month ${currentMonth}, Year ${currentYear}
    - Convert 2-digit year to 4-digit: "25" → "2025", "24" → "2024"
    - Return in format: DD/MM/YYYY
+   - Reference value: ${referenceValues.fecha || "N/A"}
+   - **CRITICAL**: When in doubt about the year or month, strongly prefer the reference value
+   - **DATE VALIDATION**: We are in month ${currentMonth}/${currentYear}. Years like 19${currentYear.toString().slice(-2)}, 1980, etc. are WRONG. Valid years: ${currentYear - 1}-${currentYear}
+   - If you see "7${currentYear.toString().slice(-1)}" or "80" as year, it's likely "${currentYear.toString().slice(-2)}" or "20" written unclearly - use the reference year
+   - Months must be 01-12. If month seems invalid, use reference value
+
+**IMPORTANT: Using reference values for placa and fecha ONLY**
+For numeroVale and m3: Extract exactly what you see (these are usually extracted correctly).
+For placa and fecha: When you encounter ambiguous characters (e.g., "4" vs "9", "1" vs "7", "S" vs "5", "2" vs "7"), use the reference value as a guide.
+
+**SPECIAL ATTENTION for placa and fecha:**
+- These fields have the most OCR errors due to handwriting
+- When there's ANY doubt about characters in placa or fecha, strongly prefer the reference value
+- For fecha: If year seems illogical (1975, 1980, etc.), it's definitely OCR error - use reference
+
+Examples:
+- Reference placa "TTT840" and image could be "TTT840" or "TTT890" (4 vs 9 ambiguity) → extract "TTT840"
+- Reference fecha "16/12/2025" and image could be "16/12/75" or "16/12/25" (7 vs 2 in year) → extract "16/12/2025"
+- Reference placa "ABC123" and image could be "ABC123" or "ABC128" (3 vs 8 ambiguity) → extract "ABC123"
+- For numeroVale and m3: Extract what you see, do NOT use reference to resolve ambiguity
 
 **CONFIDENCE SCORING:**
 Rate how clearly you can READ each field (NOT how certain you are it's correct):
@@ -256,7 +281,13 @@ export async function auditWithGemini(record, imagePathInBucket, validPlacas) {
       }
 
       // STEP 2: Call Gemini for extraction only
-      const prompt = buildExtractionPrompt(validPlacas);
+      const referenceValues = {
+        numeroVale: record.numeroVale || "",
+        placa: record.placa || "",
+        m3: record.m3 || "",
+        fecha: record.fecha || "",
+      };
+      const prompt = buildExtractionPrompt(validPlacas, referenceValues);
 
       if (attempt === 0) {
         console.log(
