@@ -21,6 +21,7 @@ Extract these fields exactly as you see them:
    - Typically 5-6 digits
    - Look for the largest, clearest printed number
    - Extract exactly what you see (usually very clear)
+   - **IMPORTANT**: Remove any leading zeros (e.g., "00023" should be extracted as "23")
 
 2. **placa**: Vehicle license plate (next to "PLACA:" label)
    - This is HANDWRITTEN
@@ -103,6 +104,7 @@ Return ONLY valid JSON (no markdown, no code blocks, no extra text):
 
 Examples:
 - Printed number "24697" perfectly clear → {"valor": "24697", "confianza": 1.0}
+- Printed number "00023" perfectly clear → {"valor": "23", "confianza": 1.0}
 - Handwritten "15" clear and readable → {"valor": "15", "confianza": 0.90}
 - Handwritten placa "LJU868" messy but identifiable → {"valor": "LJU868", "confianza": 0.65}
 - Date "16-12-25" clear handwriting → {"valor": "16/12/2025", "confianza": 0.95}
