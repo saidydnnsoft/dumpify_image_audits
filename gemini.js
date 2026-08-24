@@ -1,7 +1,144 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI } from "@google/genai";
 import { getBucket, downloadFile } from "./bucket.js";
+import { imageSize } from "image-size";
 import fs from "fs";
 import path from "path";
+
+// ---------------------------------------------------------------------------
+// Gemini configuration (all overridable via env)
+// ---------------------------------------------------------------------------
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-flash-lite-latest";
+const GEMINI_TIMEOUT_MS = parseInt(process.env.GEMINI_TIMEOUT_MS || "120000", 10);
+const GEMINI_MAX_RETRIES = parseInt(process.env.GEMINI_MAX_RETRIES || "2", 10);
+const GEMINI_THINKING_LEVEL = (process.env.GEMINI_THINKING_LEVEL || "medium")
+  .toLowerCase()
+  .trim();
+const GEMINI_MEDIA_RESOLUTION = (process.env.GEMINI_MEDIA_RESOLUTION || "high")
+  .toLowerCase()
+  .trim();
+
+const MEDIA_RESOLUTION_MAP = {
+  low: "MEDIA_RESOLUTION_LOW",
+  medium: "MEDIA_RESOLUTION_MEDIUM",
+  high: "MEDIA_RESOLUTION_HIGH",
+  ultra_high: "MEDIA_RESOLUTION_ULTRA_HIGH",
+};
+
+// Single client instance; timeout is applied per request via httpOptions.
+const ai = new GoogleGenAI({
+  apiKey: process.env.GEMINI_API_KEY,
+  httpOptions: { timeout: GEMINI_TIMEOUT_MS },
+});
+
+/**
+ * Build the request config from env.
+ * IMPORTANT: the API default media resolution is LOWER than AI Studio; on vale
+ * photos with small text/digits that makes the model guess. We force it up.
+ * Lite models do NOT support thinkingConfig (400 INVALID_ARGUMENT), so we only
+ * attach it when thinkingLevel is a real level (not 'off'/empty).
+ */
+function buildGeminiConfig() {
+  const config = {};
+
+  const mediaResolution = MEDIA_RESOLUTION_MAP[GEMINI_MEDIA_RESOLUTION];
+  if (mediaResolution) {
+    config.mediaResolution = mediaResolution;
+  }
+
+  if (GEMINI_THINKING_LEVEL && GEMINI_THINKING_LEVEL !== "off") {
+    config.thinkingConfig = { thinkingLevel: GEMINI_THINKING_LEVEL };
+  }
+
+  return config;
+}
+
+/**
+ * Detect transient errors worth retrying (only these).
+ */
+function isTransientError(error) {
+  const status = error?.status ?? error?.code;
+  if (status === 503 || status === 429) return true;
+  return /UNAVAILABLE|RESOURCE_EXHAUSTED|Deadline expired/i.test(
+    error?.message || ""
+  );
+}
+
+/**
+ * Call Gemini with exponential backoff on transient errors only.
+ * Returns the raw text of the response. Any non-transient error is rethrown
+ * immediately (per-record error handling lives in audit.js:auditRecord).
+ */
+async function generateContentWithRetry(contents, config, label) {
+  let lastError;
+  for (let attempt = 0; attempt <= GEMINI_MAX_RETRIES; attempt++) {
+    try {
+      const response = await ai.models.generateContent({
+        model: GEMINI_MODEL,
+        contents,
+        config,
+      });
+      return response.text;
+    } catch (error) {
+      lastError = error;
+      if (!isTransientError(error) || attempt === GEMINI_MAX_RETRIES) {
+        throw error;
+      }
+      const delay = 1000 * Math.pow(2, attempt); // 1s, 2s, ...
+      console.log(
+        `⏳ Transient error (${label}), retry ${attempt + 1}/${GEMINI_MAX_RETRIES} in ${
+          delay / 1000
+        }s: ${error.message}`
+      );
+      await sleep(delay);
+    }
+  }
+  throw lastError;
+}
+
+// ---------------------------------------------------------------------------
+// Robust JSON parsing of Gemini output
+// ---------------------------------------------------------------------------
+
+/** Strip ```json fences and trim to the outermost { ... } object. */
+function extractJson(text) {
+  const cleaned = text
+    .replace(/^```json?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  if (start === -1 || end === -1 || end < start) return cleaned;
+  return cleaned.slice(start, end + 1);
+}
+
+/**
+ * Repair the most common issues that break JSON.parse. Safe for this service's
+ * schema (extracted values are strings, only `confianza` is numeric):
+ * - decimal comma between digits (5,75 -> 5.75); helps if m3 comes as "5,75".
+ * - leading "+" before a number after `":` (no-op here, kept for parity).
+ * - leading zeros on a numeric value after `":` (no-op here, kept for parity).
+ * The last two are anchored to `":` so they never touch the ":" inside times.
+ */
+function repairJson(json) {
+  return json
+    .replace(/(\d),(\d)/g, "$1.$2")
+    .replace(/":(\s*)\+(\d)/g, '":$1$2')
+    .replace(/":(\s*)(-?)0+(\d)/g, '":$1$2$3');
+}
+
+function parseGeminiResponse(text) {
+  const json = extractJson(text);
+  try {
+    return JSON.parse(json);
+  } catch (err) {
+    try {
+      return JSON.parse(repairJson(json));
+    } catch (err2) {
+      console.error("Gemini JSON parse failed. Raw output:", text);
+      throw err2;
+    }
+  }
+}
 
 /**
  * Build the extraction-only prompt for Gemini (no comparison, just OCR)
@@ -122,7 +259,7 @@ function sleep(ms) {
 /**
  * Check image quality before processing
  */
-async function checkImageQuality(model, imageBase64) {
+async function checkImageQuality(imageBase64, config) {
   const qualityPrompt = `You are an image quality assessor for document scanning.
 
 Analyze this vale (transport document) image and rate its quality on a scale of 0-10.
@@ -148,274 +285,179 @@ Return ONLY valid JSON (no markdown):
 
 Set "isReadable" to true only if qualityScore >= 7.`;
 
-  const imageParts = [
-    {
-      inlineData: {
-        data: imageBase64,
-        mimeType: "image/jpeg",
-      },
-    },
+  const contents = [
+    { inlineData: { data: imageBase64, mimeType: "image/jpeg" } },
+    { text: qualityPrompt },
   ];
 
-  const result = await model.generateContent([qualityPrompt, ...imageParts]);
-  const response = result.response;
-  const text = response.text();
-
-  // Clean up response
-  let cleanedText = text.trim();
-  if (cleanedText.startsWith("```json")) {
-    cleanedText = cleanedText.replace(/```json\n?/g, "").replace(/```\n?/g, "");
-  } else if (cleanedText.startsWith("```")) {
-    cleanedText = cleanedText.replace(/```\n?/g, "");
-  }
-
-  return JSON.parse(cleanedText);
+  const text = await generateContentWithRetry(contents, config, "quality-check");
+  return parseGeminiResponse(text);
 }
 
 /**
- * Call Gemini Vision API to audit a vale image with exponential backoff retry
+ * Call Gemini Vision API to audit a vale image.
+ *
+ * The vale image comes from the GCS bucket (originally uploaded to Drive by
+ * AppSheet). Transient-error retries live in generateContentWithRetry; a
+ * failure here bubbles up to audit.js:auditRecord, which isolates it per record
+ * so one bad record never tumbles the whole batch.
  */
 export async function auditWithGemini(record, imagePathInBucket, validPlacas) {
-  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-  // Use model from env or default to gemini-1.5-flash (more stable and higher quota)
-  const modelName = process.env.GEMINI_MODEL || "gemini-1.5-flash";
-  const model = genAI.getGenerativeModel({ model: modelName });
-
   const bucket = getBucket();
   if (!bucket) {
     throw new Error("Bucket not available");
   }
+
+  const config = buildGeminiConfig();
 
   const localDir = "./temp_audit";
   if (!fs.existsSync(localDir)) {
     fs.mkdirSync(localDir, { recursive: true });
   }
 
-  const maxRetries = parseInt(process.env.GEMINI_MAX_RETRIES || "4");
-  const baseDelay = 1000; // Start with 1 second
-  let lastError;
+  try {
+    // Download the actual vale image from the bucket.
+    const localImagePath = path.join(
+      localDir,
+      path.basename(imagePathInBucket)
+    );
+    await downloadFile(bucket, imagePathInBucket, localImagePath);
 
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const imageBuffer = fs.readFileSync(localImagePath);
+    const imageBase64 = imageBuffer.toString("base64");
+
+    // Diagnostic: confirm we are getting a full-resolution image (AppSheet
+    // "Image upload size" = Full), not a compressed thumbnail. No URL/filename
+    // is logged (nothing sensitive).
     try {
-      // Download the actual vale image (only on first attempt)
-      const localImagePath = path.join(
-        localDir,
-        path.basename(imagePathInBucket)
-      );
-
-      if (attempt === 0) {
-        await downloadFile(bucket, imagePathInBucket, localImagePath);
-      }
-
-      const imageBuffer = fs.readFileSync(localImagePath);
-      const imageBase64 = imageBuffer.toString("base64");
-
-      // Prepare image for Gemini (only the actual vale, no template)
-      const imageParts = [
-        {
-          inlineData: {
-            data: imageBase64,
-            mimeType: "image/jpeg",
-          },
-        },
-      ];
-
-      // STEP 1: Check image quality first
-      let qualityScore = null;
-      if (attempt === 0) {
-        console.log(`🔍 Checking image quality for record ${record.rowId}...`);
-        try {
-          const qualityCheck = await checkImageQuality(model, imageBase64);
-          qualityScore = qualityCheck.qualityScore;
-          console.log(
-            `📊 Quality score: ${qualityCheck.qualityScore}/10 - Readable: ${qualityCheck.isReadable}`
-          );
-
-          if (!qualityCheck.isReadable) {
-            console.log(
-              `⚠️ Image quality too low (score: ${qualityCheck.qualityScore}). Marking for manual review.`
-            );
-            // Clean up temp files
-            fs.rmSync(localDir, { recursive: true });
-
-            return {
-              requiresManualReview: true,
-              qualityScore: qualityCheck.qualityScore,
-              reason: qualityCheck.reason,
-              extracciones: {
-                numeroVale: "",
-                placa: "",
-                m3: "",
-                fecha: "",
-              },
-              comparaciones: {
-                numeroVale: {
-                  coincide: false,
-                  confianza: 0,
-                  observacion: "Imagen ilegible - requiere revisión manual",
-                },
-                placa: {
-                  coincide: false,
-                  confianza: 0,
-                  observacion: "Imagen ilegible - requiere revisión manual",
-                },
-                m3: {
-                  coincide: false,
-                  confianza: 0,
-                  observacion: "Imagen ilegible - requiere revisión manual",
-                },
-                fecha: {
-                  coincide: false,
-                  confianza: 0,
-                  observacion: "Imagen ilegible - requiere revisión manual",
-                },
-              },
-              aprobado: false,
-            };
-          }
-        } catch (qualityError) {
-          console.warn(
-            `⚠️ Quality check failed, proceeding with audit anyway:`,
-            qualityError.message
-          );
-          // If quality check fails, continue with normal audit
-        }
-      }
-
-      // STEP 2: Call Gemini for extraction only
-      const referenceValues = {
-        numeroVale: record.numeroVale || "",
-        placa: record.placa || "",
-        m3: record.m3 || "",
-        fecha: record.fecha || "",
-      };
-      const prompt = buildExtractionPrompt(validPlacas, referenceValues);
-
-      if (attempt === 0) {
-        console.log(
-          `🤖 Calling Gemini for extraction on record ${record.rowId}...`
-        );
-      } else {
-        console.log(
-          `🔄 Retry ${attempt}/${maxRetries - 1} for record ${record.rowId}...`
-        );
-      }
-
-      const result = await model.generateContent([prompt, ...imageParts]);
-      const response = result.response;
-      const text = response.text();
-
-      // Clean up response (remove markdown code blocks if present)
-      let cleanedText = text.trim();
-      if (cleanedText.startsWith("```json")) {
-        cleanedText = cleanedText
-          .replace(/```json\n?/g, "")
-          .replace(/```\n?/g, "");
-      } else if (cleanedText.startsWith("```")) {
-        cleanedText = cleanedText.replace(/```\n?/g, "");
-      }
-
-      let extractionResult;
-      try {
-        extractionResult = JSON.parse(cleanedText);
-      } catch (parseError) {
-        console.warn(
-          `⚠️ JSON parse error for ${record.rowId}:`,
-          parseError.message
-        );
-        console.warn(`Response text: ${cleanedText.substring(0, 500)}...`);
-
-        // Retry on JSON parse errors (Gemini might have returned malformed JSON)
-        if (attempt < maxRetries - 1) {
-          lastError = new Error(`JSON parse error: ${parseError.message}`);
-          const delay = baseDelay * Math.pow(2, attempt);
-          console.log(
-            `⏳ Retrying due to malformed JSON, waiting ${delay / 1000}s...`
-          );
-          await sleep(delay);
-          continue;
-        }
-        throw parseError;
-      }
-
-      // STEP 3: Perform validation in JavaScript
-      const { validateExtraction } = await import("./validation.js");
-      const validationResult = validateExtraction(
-        extractionResult,
-        record,
-        validPlacas
-      );
-
-      // Combine extraction, validation, and quality score
-      const auditResult = {
-        extracciones: {
-          numeroVale: extractionResult.numeroVale.valor,
-          placa: extractionResult.placa.valor,
-          m3: extractionResult.m3.valor,
-          fecha: extractionResult.fecha.valor,
-        },
-        confianzas: {
-          numeroVale: extractionResult.numeroVale.confianza,
-          placa: extractionResult.placa.confianza,
-          m3: extractionResult.m3.confianza,
-          fecha: extractionResult.fecha.confianza,
-        },
-        comparaciones: validationResult.comparaciones,
-        aprobado: validationResult.aprobado,
-        status: validationResult.status,
-        manualReviewReason: validationResult.manualReviewReason,
-        qualityScore: qualityScore,
-      };
-
-      // Clean up temp files
-      fs.rmSync(localDir, { recursive: true });
-
-      return auditResult;
-    } catch (error) {
-      lastError = error;
-
-      // Check if it's a rate limit error (429) or server error (5xx)
-      const isRetriable =
-        error.status === 429 || (error.status >= 500 && error.status < 600);
-
-      if (!isRetriable || attempt === maxRetries - 1) {
-        // Not retriable or last attempt - fail now
-        if (fs.existsSync(localDir)) {
-          fs.rmSync(localDir, { recursive: true });
-        }
-        throw error;
-      }
-
-      // Calculate exponential backoff: 1s, 2s, 4s, 8s, etc.
-      const delay = baseDelay * Math.pow(2, attempt);
-
-      // Extract retry delay from error if available (for 429 errors)
-      let actualDelay = delay;
-      if (error.status === 429 && error.errorDetails) {
-        const retryInfo = error.errorDetails.find(
-          (detail) =>
-            detail["@type"] === "type.googleapis.com/google.rpc.RetryInfo"
-        );
-        if (retryInfo?.retryDelay) {
-          const delayMatch = retryInfo.retryDelay.match(/(\d+)s/);
-          if (delayMatch) {
-            actualDelay = parseInt(delayMatch[1]) * 1000;
-          }
-        }
-      }
-
+      const { width, height } = imageSize(imageBuffer);
       console.log(
-        `⏳ Rate limit/error for ${record.rowId}, waiting ${
-          actualDelay / 1000
-        }s before retry ${attempt + 1}/${maxRetries - 1}...`
+        `🖼️  Image for ${record.rowId}: ${(imageBuffer.length / 1024).toFixed(
+          0
+        )} KB, ${width}x${height}px (image/jpeg)`
       );
-      await sleep(actualDelay);
+    } catch (dimErr) {
+      console.warn(
+        `⚠️ Could not read image dimensions for ${record.rowId}: ${dimErr.message}`
+      );
+    }
+
+    const imageParts = [
+      { inlineData: { data: imageBase64, mimeType: "image/jpeg" } },
+    ];
+
+    // STEP 1: Check image quality first
+    let qualityScore = null;
+    console.log(`🔍 Checking image quality for record ${record.rowId}...`);
+    try {
+      const qualityCheck = await checkImageQuality(imageBase64, config);
+      qualityScore = qualityCheck.qualityScore;
+      console.log(
+        `📊 Quality score: ${qualityCheck.qualityScore}/10 - Readable: ${qualityCheck.isReadable}`
+      );
+
+      if (!qualityCheck.isReadable) {
+        console.log(
+          `⚠️ Image quality too low (score: ${qualityCheck.qualityScore}). Marking for manual review.`
+        );
+
+        return {
+          requiresManualReview: true,
+          qualityScore: qualityCheck.qualityScore,
+          reason: qualityCheck.reason,
+          extracciones: {
+            numeroVale: "",
+            placa: "",
+            m3: "",
+            fecha: "",
+          },
+          comparaciones: {
+            numeroVale: {
+              coincide: false,
+              confianza: 0,
+              observacion: "Imagen ilegible - requiere revisión manual",
+            },
+            placa: {
+              coincide: false,
+              confianza: 0,
+              observacion: "Imagen ilegible - requiere revisión manual",
+            },
+            m3: {
+              coincide: false,
+              confianza: 0,
+              observacion: "Imagen ilegible - requiere revisión manual",
+            },
+            fecha: {
+              coincide: false,
+              confianza: 0,
+              observacion: "Imagen ilegible - requiere revisión manual",
+            },
+          },
+          aprobado: false,
+        };
+      }
+    } catch (qualityError) {
+      console.warn(
+        `⚠️ Quality check failed, proceeding with audit anyway:`,
+        qualityError.message
+      );
+      // If quality check fails, continue with normal audit
+    }
+
+    // STEP 2: Call Gemini for extraction only
+    const referenceValues = {
+      numeroVale: record.numeroVale || "",
+      placa: record.placa || "",
+      m3: record.m3 || "",
+      fecha: record.fecha || "",
+    };
+    const prompt = buildExtractionPrompt(validPlacas, referenceValues);
+
+    const effectiveThinking =
+      config.thinkingConfig?.thinkingLevel || "off (not sent)";
+    console.log(
+      `🤖 Gemini extraction for ${record.rowId} → model=${GEMINI_MODEL}, ` +
+        `thinkingLevel=${effectiveThinking}, ` +
+        `mediaResolution=${config.mediaResolution || "(default)"}, ` +
+        `timeoutMs=${GEMINI_TIMEOUT_MS}, maxRetries=${GEMINI_MAX_RETRIES}`
+    );
+
+    const contents = [...imageParts, { text: prompt }];
+    const text = await generateContentWithRetry(contents, config, "extraction");
+    const extractionResult = parseGeminiResponse(text);
+
+    // STEP 3: Perform validation in JavaScript
+    const { validateExtraction } = await import("./validation.js");
+    const validationResult = validateExtraction(
+      extractionResult,
+      record,
+      validPlacas
+    );
+
+    // Combine extraction, validation, and quality score
+    return {
+      extracciones: {
+        numeroVale: extractionResult.numeroVale.valor,
+        placa: extractionResult.placa.valor,
+        m3: extractionResult.m3.valor,
+        fecha: extractionResult.fecha.valor,
+      },
+      confianzas: {
+        numeroVale: extractionResult.numeroVale.confianza,
+        placa: extractionResult.placa.confianza,
+        m3: extractionResult.m3.confianza,
+        fecha: extractionResult.fecha.confianza,
+      },
+      comparaciones: validationResult.comparaciones,
+      aprobado: validationResult.aprobado,
+      status: validationResult.status,
+      manualReviewReason: validationResult.manualReviewReason,
+      qualityScore: qualityScore,
+    };
+  } finally {
+    // Always clean up temp files.
+    if (fs.existsSync(localDir)) {
+      fs.rmSync(localDir, { recursive: true });
     }
   }
-
-  // Clean up temp files if all retries failed
-  if (fs.existsSync(localDir)) {
-    fs.rmSync(localDir, { recursive: true });
-  }
-  throw lastError;
 }
