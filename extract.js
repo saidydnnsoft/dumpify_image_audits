@@ -7,6 +7,8 @@ import {
 import { getBucket, fileExists, readJSON, writeJSON } from "./bucket.js";
 import { format, addDays } from "date-fns";
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 async function extractOne(tableName, appSheetConfig, selector = null) {
   const { appKey, appId, appsheetRegion } = appSheetConfig;
   const url = `https://${appsheetRegion}/api/v2/apps/${appId}/tables/${tableName}/Action`;
@@ -20,21 +22,37 @@ async function extractOne(tableName, appSheetConfig, selector = null) {
     };
   }
 
-  try {
-    const { data } = await axios.post(url, payload, {
-      headers: {
-        ApplicationAccessKey: appKey,
-        "Content-Type": "application/json",
-      },
-    });
-    console.log(`✅ Extracted ${data?.length || 0} records from ${tableName}`);
-    return data;
-  } catch (err) {
-    console.error(
-      `❌ Error extracting from ${tableName}:`,
-      err.response?.data || err.message
-    );
-    return [];
+  const maxRetries = 3;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const { data } = await axios.post(url, payload, {
+        headers: {
+          ApplicationAccessKey: appKey,
+          "Content-Type": "application/json",
+        },
+        timeout: 60000,
+      });
+      console.log(`✅ Extracted ${data?.length || 0} records from ${tableName}`);
+      return data;
+    } catch (err) {
+      const detail = err.response?.data?.detail || err.message;
+
+      if (attempt < maxRetries) {
+        const backoff = 500 * 2 ** (attempt - 1);
+        console.warn(
+          `⏳ Retry ${attempt}/${maxRetries} for ${tableName} after error: ${detail} (waiting ${backoff}ms)`
+        );
+        await sleep(backoff);
+        continue;
+      }
+
+      console.error(
+        `❌ Error extracting from ${tableName} after ${maxRetries} attempts:`,
+        err.response?.data || err.message
+      );
+      throw new Error(`Failed to extract '${tableName}': ${detail}`);
+    }
   }
 }
 
@@ -161,8 +179,10 @@ export async function extract(date = null) {
     obra: obraMap.get(v.id_obra),
   }));
 
-  // Save to bucket for future use (new YYYY/MM/DD structure)
-  if (bucket && tables.viaje) {
+  // Save to bucket for future use (new YYYY/MM/DD structure).
+  // Only reached if every extractOne succeeded (a failure throws above),
+  // so we never cache incomplete/empty-due-to-error data.
+  if (bucket && Array.isArray(tables.viaje)) {
     const extractionData = {
       extraction_date: new Date().toISOString(),
       date_filter: format(yesterdayDate, "dd/MM/yyyy"),
